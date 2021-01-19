@@ -333,7 +333,7 @@ func main() {
 	tagSemaphore = make(chan struct{}, *tagConcurrency)
 	for _, discoveryJob := range config.Discovery {
 		for _, metric := range discoveryJob.Metrics {
-			if *scrapingInterval < metric.Length && discoveryJob.Namespace != "AWS/S3" {
+			if *scrapingInterval < metric.Length && discoveryJob.Namespace != "AWS/S3" && discoveryJob.Namespace != "AWS/Billing" {
 				*scrapingInterval = metric.Length
 			}
 		}

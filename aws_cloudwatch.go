@@ -230,10 +230,10 @@ func (iface cloudwatchInterface) getMetricData(filter *cloudwatch.GetMetricDataI
 }
 
 func createStaticDimensions(dimensions []dimension) (output []*cloudwatch.Dimension) {
-	for _, d := range dimensions {
+	for i, _ := range dimensions {
 		output = append(output, &cloudwatch.Dimension{
-			Name:  &d.Name,
-			Value: &d.Value,
+			Name:  &dimensions[i].Name,
+			Value: &dimensions[i].Value,
 		})
 	}
 	return output

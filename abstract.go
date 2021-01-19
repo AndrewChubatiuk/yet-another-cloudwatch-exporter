@@ -152,7 +152,6 @@ func getMetricDataForQueries(
 			metricTags := resource.metricTags(tagsOnMetrics)
 
 			for _, dimensions := range resource.getDimensions(cloudwatchOutputs.Metrics) {
-				fmt.Println(dimensions)
 				for _, stats := range metric.Statistics {
 					id := fmt.Sprintf("id_%d", rand.Int())
 					getMetricDatas = append(getMetricDatas, cloudwatchData{
