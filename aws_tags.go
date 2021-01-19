@@ -15,18 +15,17 @@ import (
 	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
-	"github.com/aws/aws-sdk-go/service/elbv2"
 	r "github.com/aws/aws-sdk-go/service/resourcegroupstaggingapi"
 	"github.com/aws/aws-sdk-go/service/resourcegroupstaggingapi/resourcegroupstaggingapiiface"
 	log "github.com/sirupsen/logrus"
 )
 
 type tagsData struct {
-	ID      *string
-	Matcher *string
-	Tags    []*tag
-	Service *string
-	Region  *string
+	ID        *string
+	Matcher   *string
+	Tags      []*tag
+	Namespace *string
+	Region    *string
 }
 
 // https://docs.aws.amazon.com/sdk-for-go/api/service/resourcegroupstaggingapi/resourcegroupstaggingapiiface/
@@ -35,7 +34,6 @@ type tagsInterface struct {
 	asgClient        autoscalingiface.AutoScalingAPI
 	apiGatewayClient apigatewayiface.APIGatewayAPI
 	ec2Client        ec2iface.EC2API
-	elbv2Client      elbv2.ELBV2
 }
 
 func createSession(roleArn string, config *aws.Config) *session.Session {
@@ -102,66 +100,23 @@ func createAPIGatewaySession(region *string, roleArn string) apigatewayiface.API
 	return apigateway.New(sess, config)
 }
 
-func createELBV2Session(region *string, roleArn string) elbv2.ELBV2 {
-	config := &aws.Config{Region: region}
-	return *elbv2.New(createSession(roleArn, config), config)
-}
-
-func (iface tagsInterface) get(job job, region string) (resources []*tagsData, err error) {
-	switch job.Type {
-	case "asg":
+func (iface tagsInterface) get(job discovery, region string) (resources []*tagsData, err error) {
+	switch job.Namespace {
+	case "AWS/AutoScaling":
 		return iface.getTaggedAutoscalingGroups(job, region)
-	case "ec2Spot":
+	case "AWS/EC2Spot":
 		return iface.getTaggedEC2SpotInstances(job, region)
-	case "tgwa":
-		return iface.getTaggedTransitGatewayAttachments(job, region)
-
-	}
-
-	allResourceTypesFilters := map[string][]string{
-		"alb":                   {"elasticloadbalancing:loadbalancer/app", "elasticloadbalancing:targetgroup"},
-		"apigateway":            {"apigateway"},
-		"appsync":               {"appsync"},
-		"cf":                    {"cloudfront"},
-		"docdb":                 {"rds:db", "rds:cluster"},
-		"dynamodb":              {"dynamodb:table"},
-		"ebs":                   {"ec2:volume"},
-		"ec":                    {"elasticache:cluster"},
-		"ec2":                   {"ec2:instance"},
-		"ecs-svc":               {"ecs:cluster", "ecs:service"},
-		"ecs-containerinsights": {"ecs:cluster", "ecs:service"},
-		"efs":                   {"elasticfilesystem:file-system"},
-		"elb":                   {"elasticloadbalancing:loadbalancer"},
-		"emr":                   {"elasticmapreduce:cluster"},
-		"es":                    {"es:domain"},
-		"firehose":              {"firehose"},
-		"fsx":                   {"fsx:file-system"},
-		"gamelift":              {"gamelift"},
-		"kinesis":               {"kinesis:stream"},
-		"lambda":                {"lambda:function"},
-		"ngw":                   {"ec2:natgateway"},
-		"nlb":                   {"elasticloadbalancing:loadbalancer/net", "elasticloadbalancing:targetgroup"},
-		"rds":                   {"rds:db", "rds:cluster"},
-		"redshift":              {"redshift:cluster"},
-		"r53r":                  {"route53resolver"},
-		"s3":                    {"s3"},
-		"sfn":                   {"states"},
-		"sns":                   {"sns"},
-		"sqs":                   {"sqs"},
-		"tgw":                   {"ec2:transit-gateway"},
-		"vpn":                   {"ec2:vpn-connection"},
-		"kafka":                 {"kafka:cluster"},
-		"wafv2":                 {"wafv2"},
 	}
 	var inputparams r.GetResourcesInput
-	if resourceTypeFilters, ok := allResourceTypesFilters[job.Type]; ok {
+	if nsConfig, ok := supportedNamespaces[job.Namespace]; ok {
+		resourceTypeFilters := nsConfig.Resources
 		var filters []*string
 		for _, filter := range resourceTypeFilters {
 			filters = append(filters, aws.String(filter))
 		}
 		inputparams.ResourceTypeFilters = filters
 	} else {
-		log.Fatal("Not implemented resources:" + job.Type)
+		log.Fatal("Not implemented resources:" + job.Namespace)
 	}
 	c := iface.client
 	ctx := context.Background()
@@ -174,55 +129,22 @@ func (iface tagsInterface) get(job job, region string) (resources []*tagsData, e
 
 			resource.ID = resourceTagMapping.ResourceARN
 
-			resource.Service = &job.Type
+			resource.Namespace = &job.Namespace
 			resource.Region = &region
 
 			for _, t := range resourceTagMapping.Tags {
 				resource.Tags = append(resource.Tags, &tag{Key: *t.Key, Value: *t.Value})
 			}
 
-			if resource.filterThroughTags(job.SearchTags) {
+			if resource.filterThroughTags(job.FilterTags) {
 				resources = append(resources, &resource)
 			}
 		}
 		return pageNum < 100
 	})
 
-	switch job.Type {
-	case "alb", "nlb":
-		var filteredResources []*tagsData
-		var chunkedFilteredResources []*tagsData
-		var targetGroupArns []*string
-		var albArns []*string
-		for _, r := range resources {
-			if strings.Contains(*r.ID, "targetgroup/") {
-				targetGroupArns = append(targetGroupArns, aws.String(*r.ID))
-			} else {
-				// Add all resources except target groups
-				filteredResources = append(filteredResources, r)
-				albArns = append(albArns, r.ID)
-			}
-		}
-		// You can only describe 20 target groups at a time
-		// Break the array of strings of target group names to multiple arrays
-		// Each with a max size of 20
-		chunkSize := 20
-		var chunkedTargetGroupArns = chunkArrayOfStrings(targetGroupArns, chunkSize)
-
-		// Loop through our target group sets (manual pagination!)
-		for _, chunkedTargetGroupArnSet := range chunkedTargetGroupArns {
-			// Describe the target groups and filter ones which have a matching alb
-			targetGroupFilteredResults, err := iface.getTargetGroups(resources, chunkedTargetGroupArnSet, albArns)
-			if err != nil {
-				log.Errorf("Error describeTargetGroups for %s , err: %s", job.Type, err)
-				// Do not clear the resource list. The old behavior.
-				break
-			}
-			chunkedFilteredResources = append(chunkedFilteredResources, targetGroupFilteredResults...)
-		}
-		// Replace the list of resources which contained both albs and target groups with our filtered list
-		resources = chunkedFilteredResources
-	case "apigateway":
+	switch job.Namespace {
+	case "AWS/ApiGateway":
 		// Get all the api gateways from aws
 		apiGateways, errGet := iface.getTaggedApiGateway()
 		if errGet != nil {
@@ -252,62 +174,9 @@ func (iface tagsInterface) get(job job, region string) (resources []*tagsData, e
 	return resources, resourcePages
 }
 
-// Breaks a single array of strings into a multiple array of strings
-func chunkArrayOfStrings(targetGroupArns []*string, chunkSize int)(chunkedTargetGroupArns [][]*string){
-	for i := 0; i < len(targetGroupArns); i += chunkSize {
-		end := i + chunkSize
-		if end > len(targetGroupArns) {
-			end = len(targetGroupArns)
-		}
-		chunkedTargetGroupArns = append(chunkedTargetGroupArns, targetGroupArns[i:end])
-	}
-	return chunkedTargetGroupArns
-}
-
-// We want to make this request in a background thread with pagination
-// https://docs.aws.amazon.com/sdk-for-go/api/service/elbv2/#ELBV2.DescribeTargetGroups
-func (iface tagsInterface) getTargetGroups(resources []*tagsData, targetGroupArns []*string, albArns []*string) (filteredResources []*tagsData, err error) {
-	ctx := context.Background()
-	pageNum := 0
-	// You cannot describe more than '20' target groups at a time
-	// It feels like pageSize would handle this but it does not.
-	// Using pageSize anyways
-	pageSize := aws.Int64(20)
-	return filteredResources, iface.elbv2Client.DescribeTargetGroupsPagesWithContext(ctx, &elbv2.DescribeTargetGroupsInput{TargetGroupArns: targetGroupArns, PageSize: pageSize},
-		func(page *elbv2.DescribeTargetGroupsOutput, more bool) bool {
-			pageNum++
-			targetGroupsAPICounter.Inc()
-
-			// For each of the target groups
-			for _, tg := range page.TargetGroups {
-				if len(tg.LoadBalancerArns) == 0 {
-					log.Debugf("No LoadBalancerArns in targetGroup %s", *tg.TargetGroupArn)
-					continue
-				}
-				// for each alb associated with this target group
-				for _, tgLoadBalancerArn := range tg.LoadBalancerArns {
-					// check each alb ARN
-					for _, albArn := range albArns {
-						if *albArn == *tgLoadBalancerArn {
-							for _, res := range resources {
-								// If our resource list has an entry for this target group
-								// Which has an associated alb, add it to our filtered list
-								if *res.ID == *tg.TargetGroupArn {
-									filteredResources = append(filteredResources, res)
-									break
-								}
-							}
-						}
-					}
-				}
-			}
-			return pageNum < 100
-		})
-}
-
 // Once the resourcemappingapi supports ASGs then this workaround method can be deleted
 // https://docs.aws.amazon.com/sdk-for-go/api/service/resourcegroupstaggingapi/
-func (iface tagsInterface) getTaggedAutoscalingGroups(job job, region string) (resources []*tagsData, err error) {
+func (iface tagsInterface) getTaggedAutoscalingGroups(job discovery, region string) (resources []*tagsData, err error) {
 	ctx := context.Background()
 	pageNum := 0
 	return resources, iface.asgClient.DescribeAutoScalingGroupsPagesWithContext(ctx, &autoscaling.DescribeAutoScalingGroupsInput{},
@@ -322,14 +191,14 @@ func (iface tagsInterface) getTaggedAutoscalingGroups(job job, region string) (r
 				parts := strings.Split(*asg.AutoScalingGroupARN, ":")
 				resource.ID = aws.String(fmt.Sprintf("arn:%s:autoscaling:%s:%s:%s", parts[1], parts[3], parts[4], parts[7]))
 
-				resource.Service = &job.Type
+				resource.Namespace = &job.Namespace
 				resource.Region = &region
 
 				for _, t := range asg.Tags {
 					resource.Tags = append(resource.Tags, &tag{Key: *t.Key, Value: *t.Value})
 				}
 
-				if resource.filterThroughTags(job.SearchTags) {
+				if resource.filterThroughTags(job.FilterTags) {
 					resources = append(resources, &resource)
 				}
 			}
@@ -354,35 +223,7 @@ func (iface tagsInterface) getTaggedApiGateway() (*apigateway.GetRestApisOutput,
 	return &output, err
 }
 
-func (iface tagsInterface) getTaggedTransitGatewayAttachments(job job, region string) (resources []*tagsData, err error) {
-	ctx := context.Background()
-	pageNum := 0
-	return resources, iface.ec2Client.DescribeTransitGatewayAttachmentsPagesWithContext(ctx, &ec2.DescribeTransitGatewayAttachmentsInput{},
-		func(page *ec2.DescribeTransitGatewayAttachmentsOutput, more bool) bool {
-			pageNum++
-			ec2APICounter.Inc()
-
-			for _, tgwa := range page.TransitGatewayAttachments {
-				resource := tagsData{}
-
-				resource.ID = aws.String(fmt.Sprintf("%s/%s", *tgwa.TransitGatewayId, *tgwa.TransitGatewayAttachmentId))
-
-				resource.Service = &job.Type
-				resource.Region = &region
-
-				for _, t := range tgwa.Tags {
-					resource.Tags = append(resource.Tags, &tag{Key: *t.Key, Value: *t.Value})
-				}
-
-				if resource.filterThroughTags(job.SearchTags) {
-					resources = append(resources, &resource)
-				}
-			}
-			return pageNum < 100
-		})
-}
-
-func (iface tagsInterface) getTaggedEC2SpotInstances(job job, region string) (resources []*tagsData, err error) {
+func (iface tagsInterface) getTaggedEC2SpotInstances(job discovery, region string) (resources []*tagsData, err error) {
 	ctx := context.Background()
 	pageNum := 0
 	return resources, iface.ec2Client.DescribeSpotFleetRequestsPagesWithContext(ctx, &ec2.DescribeSpotFleetRequestsInput{},
@@ -390,19 +231,19 @@ func (iface tagsInterface) getTaggedEC2SpotInstances(job job, region string) (re
 			pageNum++
 			ec2APICounter.Inc()
 
-			for _, ec2Spot := range page.SpotFleetRequestConfigs{
+			for _, ec2Spot := range page.SpotFleetRequestConfigs {
 				resource := tagsData{}
 
 				resource.ID = aws.String(fmt.Sprintf("%s", *ec2Spot.SpotFleetRequestId))
 
-				resource.Service = &job.Type
+				resource.Namespace = &job.Namespace
 				resource.Region = &region
 
 				for _, t := range ec2Spot.Tags {
 					resource.Tags = append(resource.Tags, &tag{Key: *t.Key, Value: *t.Value})
 				}
 
-				if resource.filterThroughTags(job.SearchTags) {
+				if resource.filterThroughTags(job.FilterTags) {
 					resources = append(resources, &resource)
 				}
 			}
@@ -417,18 +258,20 @@ func migrateTagsToPrometheus(tagData []*tagsData) []*PrometheusMetric {
 
 	for _, d := range tagData {
 		for _, entry := range d.Tags {
-			if !stringInSlice(entry.Key, tagList[*d.Service]) {
-				tagList[*d.Service] = append(tagList[*d.Service], entry.Key)
+			for _, v := range tagList[*d.Namespace] {
+				if v == entry.Key {
+					tagList[*d.Namespace] = append(tagList[*d.Namespace], entry.Key)
+				}
 			}
 		}
 	}
 
 	for _, d := range tagData {
-		name := "aws_" + promString(*d.Service) + "_info"
+		name := "aws_" + promString(*d.Namespace) + "_info"
 		promLabels := make(map[string]string)
 		promLabels["name"] = *d.ID
 
-		for _, entry := range tagList[*d.Service] {
+		for _, entry := range tagList[*d.Namespace] {
 			labelKey := "tag_" + promStringTag(entry)
 			promLabels[labelKey] = ""
 

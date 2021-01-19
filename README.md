@@ -17,42 +17,44 @@ YACE is currently in quick iteration mode. Things will probably break in upcomin
 * Pull data from multiple AWS accounts using cross-account roles
 * Supported services with auto discovery through tags:
 
-  * alb - Application Load Balancer
-  * apigateway - Api Gateway
-  * appsync - AppSync
-  * cf - Cloud Front
-  * docdb - DocumentDB (with MongoDB compatibility)
-  * dynamodb - NoSQL Online Datenbank Service
-  * ebs - Elastic Block Storage
-  * ec - ElastiCache
-  * ec2 - Elastic Compute Cloud
-  * ec2Spot - Elastic Compute Cloud for Spot Instances
-  * ecs-svc - Elastic Container Service (Service Metrics)
-  * ecs-containerinsights - ECS/ContainerInsights (Fargate metrics)
-  * efs - Elastic File System
-  * elb - Elastic Load Balancer
-  * emr - Elastic MapReduce
-  * es - ElasticSearch
-  * fsx - FSx File System
-  * gamelift - GameLift
-  * kinesis - Kinesis Data Stream
-  * ngw - Nat Gateway
-  * lambda - Lambda Functions
-  * nlb - Network Load Balancer
-  * redshift - Redshift Database
-  * rds - Relational Database Service
-  * r53r - Route53 Resolver
-  * s3 - Object Storage
-  * sqs - Simple Queue Service
-  * tgw - Transit Gateway
-  * tgwa - Transit Gateway Attachments
-  * vpn - VPN connection
-  * asg - Auto Scaling Group
-  * kafka - Managed Apache Kafka
-  * firehose - Managed Streaming Service
-  * sns - Simple Notification Service
-  * sfn - Step Functions
-  * wafv2 - Web Application Firewall v2
+  * AWS/ApplicationELB - Application Load Balancer
+  * AWS/ApiGateway - Api Gateway
+  * AWS/AppSync - AppSync
+  * AWS/CloudFront - Cloud Front
+  * AWS/Cognito - Cognito User Pool
+  * AWS/DocDB - DocumentDB (with MongoDB compatibility)
+  * AWS/DynamoDB - NoSQL Online Datenbank Service
+  * AWS/EBS - Elastic Block Storage
+  * AWS/ElastiCache - ElastiCache
+  * AWS/EC2 - Elastic Compute Cloud
+  * AWS/EC2Spot - Elastic Compute Cloud for Spot Instances
+  * AWS/ECS - Elastic Container Service (Service Metrics)
+  * ECS/ContainerInsights - ECS/ContainerInsights (Fargate metrics)
+  * AWS/EFS - Elastic File System
+  * AWS/ELB - Elastic Load Balancer
+  * AWS/ElasticMapReduce - Elastic MapReduce
+  * AWS/ES - ElasticSearch
+  * AWS/FSx - FSx File System
+  * AWS/GameLift - GameLift
+  * AWS/Kinesis - Kinesis Data Stream
+  * Glue - AWS Glue
+  * AWS/IoT - IoT Core
+  * AWS/Kafka - AWS Kafka Service
+  * AWS/Kinesis - AWS Kinesis Streams
+  * AWS/Lambda - AWS Lambda Function
+  * AWS/NetworkELB - Network Load Balancer
+  * AWS/Redshift - Redshift Database
+  * AWS/RDS - Relational Database Service
+  * AWS/Route53Resolver - Route53 Resolver
+  * AWS/S3 - Object Storage
+  * AWS/SQS - Simple Queue Service
+  * AWS/TragsitGateway - Transit Gateway
+  * AWS/VPN - VPN connection
+  * AWS/AutoScaling - Auto Scaling Group
+  * AWS/Firehose - Managed Streaming Service
+  * AWS/SNS - Simple Notification Service
+  * AWS/States - Step Functions
+  * AWS/WAFV2 - Web Application Firewall v2
 
 ## Image
 
@@ -99,7 +101,7 @@ exportedTagsOnMetrics:
 | length (Default 120) | How far back to request data for in seconds                                                              |
 | delay                | If set it will request metrics up until `current_time - delay`                                           |
 | roleArns             | List of IAM roles to assume (optional)                                                                   |
-| searchTags           | List of Key/Value pairs to use for tag filtering (all must match), Value can be a regex.                 |
+| filterTags           | List of Key/Value pairs to use for tag filtering (all must match), Value can be a regex.                 |
 | period                 | Statistic period in seconds (General Setting for all metrics in this job)                              |
 | addCloudwatchTimestamp | Export the metric with the original CloudWatch timestamp (General Setting for all metrics in this job) |
 | customTags           | Custom tags to be added as a list of Key/Value pairs                                                     |
@@ -146,30 +148,31 @@ general setting.  The currently inherited settings are period, and addCloudwatch
 ### Example of config File
 
 ```yaml
-discovery:
+global:
   exportedTagsOnMetrics:
-    ec2:
+    AWS/EC22:
       - Name
-    ebs:
+    AWS/EBS:
       - VolumeId
+discovery:
   jobs:
-  - type: es
+  - type: AWS/ES
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: type
         Value: ^(easteregg|k8s)$
     metrics:
       - name: FreeStorageSpace
         statistics:
         - Sum
-        period: 600
-        length: 60
+        period: 60
+        length: 600
       - name: ClusterStatus.green
         statistics:
         - Minimum
-        period: 600
-        length: 60
+        period: 60
+        length: 600
       - name: ClusterStatus.yellow
         statistics:
         - Maximum
@@ -180,14 +183,12 @@ discovery:
         - Maximum
         period: 600
         length: 60
-  - type: elb
+  - type: AWS/ELB
     regions:
       - eu-west-1
     length: 900
     delay: 120
-    awsDimensions:
-     - AvailabilityZone
-    searchTags:
+    filterTags:
       - Key: KubernetesCluster
         Value: production-19
     metrics:
@@ -203,10 +204,10 @@ discovery:
         length: 900 #(this will be ignored)
         delay: 300 #(this will be ignored)
         nilToZero: true
-  - type: alb
+  - type: AWS/ApplicationELB
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: kubernetes.io/service-name
         Value: .*
     metrics:
@@ -214,10 +215,10 @@ discovery:
         statistics: [Maximum]
         period: 60
         length: 600
-  - type: vpn
+  - type: AWS/VPN
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: kubernetes.io/service-name
         Value: .*
     metrics:
@@ -226,7 +227,7 @@ discovery:
         - p90
         period: 60
         length: 300
-  - type: kinesis
+  - type: AWS/Kinesis
     regions:
       - eu-west-1
     metrics:
@@ -235,10 +236,10 @@ discovery:
         - Sum
         period: 60
         length: 300
-  - type: s3
+  - type: AWS/S3
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: type
         Value: public
     metrics:
@@ -258,10 +259,10 @@ discovery:
         additionalDimensions:
           - name: StorageType
             value: StandardStorage
-  - type: ebs
+  - type: AWS/EBS
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: type
         Value: public
     metrics:
@@ -271,15 +272,12 @@ discovery:
         period: 600
         length: 600
         addCloudwatchTimestamp: true
-  - type: kafka
+  - type: AWS/Kafka
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: env
         Value: dev
-    awsDimensions:
-      - Broker ID
-      - Topic
     metrics:
       - name: BytesOutPerSec
         statistics:

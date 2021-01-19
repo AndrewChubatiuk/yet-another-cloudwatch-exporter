@@ -14,6 +14,18 @@ import (
 
 var version = "custom-build"
 
+type namespaces map[string]resource
+type PromStats struct {
+	Registry            *prometheus.Registry
+	ProcessingTimeTotal time.Duration
+	Now                 time.Time
+}
+
+type resource struct {
+	Resources  []string
+	Dimensions []string
+}
+
 var (
 	addr                  = flag.String("listen-address", ":5000", "The address to listen on.")
 	configFile            = flag.String("config.file", "config.yml", "Path to configuration file.")
@@ -26,46 +38,241 @@ var (
 	decoupledScraping     = flag.Bool("decoupled-scraping", true, "Decouples scraping and serving of metrics.")
 	metricsPerQuery       = flag.Int("metrics-per-query", 500, "Number of metrics made in a single GetMetricsData request")
 	labelsSnakeCase       = flag.Bool("labels-snake-case", false, "If labels should be output in snake case instead of camel case")
-
-	supportedServices = []string{
-		"alb",
-		"apigateway",
-		"appsync",
-		"asg",
-		"cf",
-		"docdb",
-		"dynamodb",
-		"ebs",
-		"ec",
-		"ec2",
-		"ec2Spot",
-		"ecs-svc",
-		"ecs-containerinsights",
-		"efs",
-		"elb",
-		"emr",
-		"es",
-		"firehose",
-		"fsx",
-		"gamelift",
-		"kafka",
-		"kinesis",
-		"lambda",
-		"ngw",
-		"nlb",
-		"rds",
-		"redshift",
-		"r53r",
-		"s3",
-		"sfn",
-		"sns",
-		"sqs",
-		"tgw",
-		"tgwa",
-		"vpn",
-		"wafv2",
+	promStats             = PromStats{
+		Registry: prometheus.NewRegistry(),
 	}
 
+	supportedNamespaces = namespaces{
+		"AWS/ApplicationELB": {
+			Resources: []string{"elasticloadbalancing:loadbalancer/app", "elasticloadbalancing:targetgroup"},
+			Dimensions: []string{
+				":(?P<TargetGroup>targetgroup/.+)",
+				":loadbalancer/(?P<LoadBalancer>.+)$",
+			},
+		},
+		"AWS/ApiGateway": {
+			Resources: []string{"apigateway"},
+			Dimensions: []string{
+				"apis/(?P<ApiName>[^/]+)",
+				"stages/(?P<Stage>[^/]+)",
+			},
+		},
+		"AWS/AppSync": {
+			Resources: []string{"appsync"},
+			Dimensions: []string{
+				"apis/(?P<GraphQLAPIId>[^/]+)",
+			},
+		},
+		"AWS/AutoScaling": {
+			Resources: []string{"cloudfront"},
+			Dimensions: []string{
+				"autoScalingGroupName/(?P<AutoScalingGroupName>[^/]+)",
+			},
+		},
+		"AWS/CloudFront": {
+			Resources: []string{},
+			Dimensions: []string{
+				"distribution/(?P<DistributionId>[^/]+)",
+			},
+		},
+		"AWS/Cognito": {
+			Resources: []string{"cognito-idp:userpool"},
+			Dimensions: []string{
+				"userpool/(?P<UserPool>[^/]+)",
+			},
+		},
+		"AWS/DocDB": {
+			Resources: []string{"rds:db", "rds:cluster"},
+			Dimensions: []string{
+				"cluster:(?P<DBClusterIdentifier>[^/]+)",
+				"db:(?P<DBInstanceIdentifier>[^/]+)",
+			},
+		},
+		"AWS/DynamoDB": {
+			Resources: []string{"dynamodb:table"},
+			Dimensions: []string{
+				":table/(?P<TableName>[^/]+)",
+			},
+		},
+		"AWS/EBS": {
+			Resources: []string{"ec2:volume"},
+			Dimensions: []string{
+				"volume/(?P<VolumeId>[^/]+)",
+			},
+		},
+		"AWS/ElastiCache": {
+			Resources: []string{"elasticache:cluster"},
+			Dimensions: []string{
+				"cluster:(?P<CacheClusterId>[^/]+)",
+			},
+		},
+		"AWS/EC2": {
+			Resources: []string{"ec2:instance"},
+			Dimensions: []string{
+				"instance/(?P<InstanceId>[^/]+)",
+			},
+		},
+		"AWS/EC2Spot": {
+			Resources: []string{"ec2:instance"},
+		},
+		"AWS/ECS": {
+			Resources: []string{"ecs:cluster", "ecs:service"},
+			Dimensions: []string{
+				"cluster/(?P<ClusterName>[^/]+)",
+				"service/(?P<ClusterName>[^/]+)/([^/]+)",
+			},
+		},
+		"ECS/ContainerInsights": {
+			Resources: []string{"ecs:cluster", "ecs:service"},
+			Dimensions: []string{
+				"cluster/(?P<ClusterName>[^/]+)",
+				"service/(?P<ClusterName>[^/]+)/([^/]+)",
+			},
+		},
+		"AWS/EFS": {
+			Resources: []string{"elasticfilesystem:file-system"},
+			Dimensions: []string{
+				"file-system/(?P<FileSystemId>[^/]+)",
+			},
+		},
+		"AWS/ELB": {
+			Resources: []string{"elasticloadbalancing:loadbalancer"},
+			Dimensions: []string{
+				":loadbalancer/(?P<LoadBalancer>.+)$",
+			},
+		},
+		"AWS/ElasticMapReduce": {
+			Resources: []string{"elasticmapreduce:cluster"},
+			Dimensions: []string{
+				"cluster/(?P<JobFlowId>[^/]+)",
+			},
+		},
+		"AWS/ES": {
+			Resources: []string{"es:domain"},
+			Dimensions: []string{
+				":domain/(?P<DomainName>[^/]+)",
+			},
+		},
+		"AWS/Firehose": {
+			Resources: []string{"firehose"},
+			Dimensions: []string{
+				":deliverystream/(?P<DeliveryStreamName>[^/]+)",
+			},
+		},
+		"AWS/FSx": {
+			Resources: []string{"fsx:file-system"},
+			Dimensions: []string{
+				"file-system/(?P<FileSystemId>[^/]+)",
+			},
+		},
+		"AWS/GameLift": {
+			Resources: []string{"gamelift"},
+			Dimensions: []string{
+				":fleet/(?P<FleetId>[^/]+)",
+			},
+		},
+		"Glue": {
+			Resources: []string{"glue:job"},
+			Dimensions: []string{
+				":job/(?P<JobName>[^/]+)",
+			},
+		},
+		"AWS/IoT": {
+			Resources: []string{},
+		},
+		"AWS/Kafka": {
+			Resources: []string{"kafka:cluster"},
+			Dimensions: []string{
+				":cluster/(?P<Cluster Name>[^/]+)",
+			},
+		},
+		"AWS/Kinesis": {
+			Resources: []string{"kinesis:stream"},
+			Dimensions: []string{
+				":stream/(?P<StreamName>[^/]+)",
+			},
+		},
+		"AWS/Lambda": {
+			Resources: []string{"lambda:function"},
+			Dimensions: []string{
+				":function:(?P<FunctionName>[^/]+)",
+			},
+		},
+		"AWS/NATGateway": {
+			Resources: []string{"ec2:natgateway"},
+			Dimensions: []string{
+				"natgateway/(?P<NatGatewayId>[^/]+)",
+			},
+		},
+		"AWS/NetworkELB": {
+			Resources: []string{"elasticloadbalancing:loadbalancer/net", "elasticloadbalancing:targetgroup"},
+			Dimensions: []string{
+				":(?P<TargetGroup>targetgroup/.+)",
+				":loadbalancer/(?P<LoadBalancer>.+)$",
+			},
+		},
+		"AWS/RDS": {
+			Resources: []string{"rds:db", "rds:cluster"},
+			Dimensions: []string{
+				":cluster:(?P<DBClusterIdentifier>[^/]+)",
+				":db:(?P<DBInstanceIdentifier>[^/]+)",
+			},
+		},
+		"AWS/Redshift": {
+			Resources: []string{"redshift:cluster"},
+			Dimensions: []string{
+				":cluster:(?P<ClusterIdentifier>[^/]+)",
+			},
+		},
+		"AWS/Route53Resolver": {
+			Resources: []string{"route53resolver"},
+			Dimensions: []string{
+				":resolver-endpoint/(?P<EndpointId>[^/]+)",
+			},
+		},
+		"AWS/S3": {
+			Resources: []string{"s3"},
+			Dimensions: []string{
+				"(?P<BucketName>[^:]+)$",
+			},
+		},
+		"AWS/States": {
+			Resources: []string{"states"},
+			Dimensions: []string{
+				"(?P<StateMachineArn>.*)",
+			},
+		},
+		"AWS/SNS": {
+			Resources: []string{"sns"},
+			Dimensions: []string{
+				"(?P<TopicName>[^:]+)$",
+			},
+		},
+		"AWS/SQS": {
+			Resources: []string{"sqs"},
+			Dimensions: []string{
+				"(?P<QueueName>[^:]+)$",
+			},
+		},
+		"AWS/TransitGateway": {
+			Resources: []string{"ec2:transit-gateway"},
+			Dimensions: []string{
+				":transit-gateway/(?P<TransitGateway>[^/]+)",
+			},
+		},
+		"AWS/VPN": {
+			Resources: []string{"ec2:vpn-connection"},
+			Dimensions: []string{
+				":vpn-connection/(?P<VpnId>[^/]+)",
+			},
+		},
+		"AWS/WAFV2": {
+			Resources: []string{"wafv2"},
+			Dimensions: []string{
+				"/webacl/(?P<WebACL>[^/]+)",
+			},
+		},
+	}
 	config = conf{}
 )
 
@@ -82,22 +289,23 @@ func init() {
 
 }
 
-func updateMetrics(registry *prometheus.Registry, now time.Time) time.Time {
-	tagsData, cloudwatchData, endtime := scrapeAwsData(config, now)
+func (stats *PromStats) updateMetrics() {
+	tagsData, cloudwatchData, now := scrapeAwsData(config, stats.Now)
+	stats.Now = *now
 	var metrics []*PrometheusMetric
 
 	metrics = append(metrics, migrateCloudwatchToPrometheus(cloudwatchData)...)
 	metrics = ensureLabelConsistencyForMetrics(metrics)
 
 	metrics = append(metrics, migrateTagsToPrometheus(tagsData)...)
-
+	registry := prometheus.NewRegistry()
 	registry.MustRegister(NewPrometheusCollector(metrics))
 	for _, counter := range []prometheus.Counter{cloudwatchAPICounter, cloudwatchGetMetricDataAPICounter, cloudwatchGetMetricStatisticsAPICounter, resourceGroupTaggingAPICounter, autoScalingAPICounter, apiGatewayAPICounter, targetGroupsAPICounter} {
 		if err := registry.Register(counter); err != nil {
 			log.Warning("Could not publish cloudwatch api metric")
 		}
 	}
-	return *endtime
+	stats.Registry = registry
 }
 
 func main() {
@@ -119,61 +327,20 @@ func main() {
 
 	cloudwatchSemaphore = make(chan struct{}, *cloudwatchConcurrency)
 	tagSemaphore = make(chan struct{}, *tagConcurrency)
-
-	registry := prometheus.NewRegistry()
-
-	log.Println("Startup completed")
-	//Variables to hold last scrape time
-	var now time.Time
-	//variable to hold total processing time.
-	var processingtimeTotal time.Duration
-	maxjoblength := 0
-	for _, discoveryJob := range config.Discovery.Jobs {
-		length := getMetricDataInputLength(discoveryJob)
-		//S3 can have upto 1 day to day will need to address it in seprate block
-		//TBD
-		if (maxjoblength < length) && (discoveryJob.Type != "s3") {
-			maxjoblength = length
+	for _, discoveryJob := range config.Discovery {
+		for _, metric := range discoveryJob.Metrics {
+			if *scrapingInterval < metric.Length && discoveryJob.Namespace != "AWS/S3" {
+				*scrapingInterval = metric.Length
+			}
 		}
 	}
-
-	//To aviod future timestamp issue we need make sure scrape intervel is atleast at the same level as that of highest job length
-	if *scrapingInterval < maxjoblength {
-		*scrapingInterval = maxjoblength
-	}
+	log.Println("Startup completed")
 
 	if *decoupledScraping {
 		go func() {
 			for {
-				t0 := time.Now()
-				newRegistry := prometheus.NewRegistry()
-				endtime := updateMetrics(newRegistry, now)
-				now = endtime
-				log.Debug("Metrics scraped.")
-				registry = newRegistry
-				t1 := time.Now()
-				processingtime := t1.Sub(t0)
-				processingtimeTotal = processingtimeTotal + processingtime
-				if processingtimeTotal.Seconds() > 60.0 {
-					sleepinterval := *scrapingInterval - int(processingtimeTotal.Seconds())
-					//reset processingtimeTotal
-					processingtimeTotal = 0
-					if sleepinterval <= 0 {
-						//TBD use cases is when metrics like EC2 and EBS take more scrapping interval like 6 to 7 minutes to finish
-						log.Debug("Unable to sleep since we lagging behind please try adjusting your scrape interval or running this instance with less number of metrics")
-						continue
-					} else {
-						log.Debug("Sleeping smaller intervals to catchup with lag", sleepinterval)
-						time.Sleep(time.Duration(sleepinterval) * time.Second)
-					}
-
-				} else {
-					log.Debug("Sleeping at regular sleep interval ", *scrapingInterval)
-					time.Sleep(time.Duration(*scrapingInterval) * time.Second)
-				}
-
+				promStats.refreshMetrics(*scrapingInterval)
 			}
-
 		}()
 	}
 
@@ -189,16 +356,35 @@ func main() {
 
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		if !(*decoupledScraping) {
-			newRegistry := prometheus.NewRegistry()
-			updateMetrics(newRegistry, now)
-			log.Debug("Metrics scraped.")
-			registry = newRegistry
+			promStats.refreshMetrics(*scrapingInterval)
 		}
-		handler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{
+		handler := promhttp.HandlerFor(promStats.Registry, promhttp.HandlerOpts{
 			DisableCompression: false,
 		})
 		handler.ServeHTTP(w, r)
 	})
 
 	log.Fatal(http.ListenAndServe(*addr, nil))
+}
+
+func (stats *PromStats) refreshMetrics(scrapingInterval int) {
+	startTime := time.Now()
+	stats.updateMetrics()
+	endTime := time.Now()
+	stats.ProcessingTimeTotal = stats.ProcessingTimeTotal + endTime.Sub(startTime)
+	if stats.ProcessingTimeTotal.Seconds() > 60.0 {
+		sleepInterval := scrapingInterval - int(stats.ProcessingTimeTotal.Seconds())
+		stats.ProcessingTimeTotal = 0
+		if sleepInterval <= 0 {
+			log.Debug("Unable to sleep since we lagging behind please try adjusting your scrape interval or running this instance with less number of metrics")
+			return
+		} else {
+			log.Debug("Sleeping smaller intervals to catchup with lag", sleepInterval)
+			time.Sleep(time.Duration(sleepInterval) * time.Second)
+		}
+
+	} else {
+		log.Debug("Sleeping at regular sleep interval ", scrapingInterval)
+		time.Sleep(time.Duration(scrapingInterval) * time.Second)
+	}
 }

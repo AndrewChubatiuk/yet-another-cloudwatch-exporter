@@ -2,70 +2,81 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
-
-	log "github.com/sirupsen/logrus"
+	"github.com/go-playground/validator/v10"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
+	"reflect"
+	"strings"
 )
 
 type conf struct {
-	Discovery discovery `yaml:"discovery"`
-	Static    []static  `yaml:"static"`
+	Global    global      `yaml:"global"`
+	Discovery []discovery `yaml:"discovery" validate:"required_without=Static,dive,required"`
+	Static    []static    `yaml:"static" validate:"required_without=Discovery,dive,required"`
 }
 
-type discovery struct {
+type global struct {
 	ExportedTagsOnMetrics exportedTagsOnMetrics `yaml:"exportedTagsOnMetrics"`
-	Jobs                  []job                 `yaml:"jobs"`
 }
 
 type exportedTagsOnMetrics map[string][]string
 
 type job struct {
-	Regions                []string `yaml:"regions"`
-	Type                   string   `yaml:"type"`
-	RoleArns               []string `yaml:"roleArns"`
-	AwsDimensions          []string `yaml:"awsDimensions"`
-	SearchTags             []tag    `yaml:"searchTags"`
-	CustomTags             []tag    `yaml:"customTags"`
-	Metrics                []metric `yaml:"metrics"`
-	Length                 int      `yaml:"length"`
-	Delay                  int      `yaml:"delay"`
-	Period                 int      `yaml:"period"`
-	AddCloudwatchTimestamp bool     `yaml:"addCloudwatchTimestamp"`
+	Regions       []string `yaml:"regions" validate:"required"`
+	RoleArns      []string `yaml:"roleArns"`
+	CustomTags    []tag    `yaml:"customTags" validate:"omitempty,dive,required"`
+	Metrics       []metric `yaml:"metrics" validate:"required,dive,required"`
+	Namespace     string   `yaml:"namespace" validate:"required,isAwsNamespace"`
+	metricsCommon `yaml:",inline"`
+}
+
+type discovery struct {
+	FilterTags []tag `yaml:"filterTags" validate:"omitempty,dive,required"`
+	job        `yaml:",inline"`
 }
 
 type static struct {
-	Name       string      `yaml:"name"`
-	Regions    []string    `yaml:"regions"`
-	RoleArns   []string    `yaml:"roleArns"`
-	Namespace  string      `yaml:"namespace"`
-	CustomTags []tag       `yaml:"customTags"`
-	Dimensions []dimension `yaml:"dimensions"`
-	Metrics    []metric    `yaml:"metrics"`
+	Name       string      `yaml:"name" validate:"required"`
+	Dimensions []dimension `yaml:"dimensions" validate:"omitempty,dive,required"`
+	job        `yaml:",inline"`
+}
+
+type metricsCommon struct {
+	Period                 int  `yaml:"period" validate:"omitempty,gte=1"`
+	Length                 int  `yaml:"length" validate:"omitempty,gtefield=Period"`
+	Delay                  int  `yaml:"delay"`
+	AddCloudwatchTimestamp bool `yaml:"addCloudwatchTimestamp"`
 }
 
 type metric struct {
-	Name                   string      `yaml:"name"`
-	Statistics             []string    `yaml:"statistics"`
-	AdditionalDimensions   []dimension `yaml:"additionalDimensions"`
-	Period                 int         `yaml:"period"`
-	Length                 int         `yaml:"length"`
-	Delay                  int         `yaml:"delay"`
-	NilToZero              bool        `yaml:"nilToZero"`
-	AddCloudwatchTimestamp bool        `yaml:"addCloudwatchTimestamp"`
+	Name          string   `yaml:"name" validate:"required"`
+	Statistics    []string `yaml:"statistics" validate:"required"`
+	NilToZero     bool     `yaml:"nilToZero"`
+	metricsCommon `yaml:",inline"`
 }
 
 type dimension struct {
-	Name  string `yaml:"name"`
-	Value string `yaml:"value"`
+	Name  string `yaml:"name" validate:"required"`
+	Value string `yaml:"value" validate:"required"`
 }
 
 type tag struct {
-	Key   string `yaml:"Key"`
-	Value string `yaml:"Value"`
+	Key   string `yaml:"Key" validate:"required"`
+	Value string `yaml:"Value" validate:"required"`
 }
 
+var validate *validator.Validate
+
 func (c *conf) load(file *string) error {
+	validate = validator.New()
+	validate.RegisterTagNameFunc(func(fld reflect.StructField) string {
+		name := strings.SplitN(fld.Tag.Get("yaml"), ",", 2)[0]
+		if name == "-" {
+			return ""
+		}
+		return name
+	})
+	validate.RegisterValidation("isAwsNamespace", validateAWSNamespace)
 	yamlFile, err := ioutil.ReadFile(*file)
 	if err != nil {
 		return err
@@ -75,68 +86,30 @@ func (c *conf) load(file *string) error {
 		return err
 	}
 
-	for n, job := range c.Discovery.Jobs {
-		if len(job.RoleArns) == 0 {
-			c.Discovery.Jobs[n].RoleArns = []string{""} // use current IAM role
-		}
-	}
-	for n, job := range c.Static {
-		if len(job.RoleArns) == 0 {
-			c.Static[n].RoleArns = []string{""} // use current IAM role
-		}
-	}
-
-	err = c.validate()
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *conf) validate() error {
-	if c.Discovery.Jobs == nil && c.Static == nil {
-		return fmt.Errorf("At least 1 Discovery job or 1 Static must be defined")
-	}
-
-	if c.Discovery.Jobs != nil {
-		for idx, job := range c.Discovery.Jobs {
-			err := c.validateDiscoveryJob(job, idx)
-			if err != nil {
-				return err
+	if err = validate.Struct(*c); err != nil {
+		var errMessage string
+		for _, err := range err.(validator.ValidationErrors) {
+			if err.Tag() == "required" {
+				errMessage = fmt.Sprintf("%v should not be empty", err.Namespace())
+			} else if err.Tag() == "isAwsNamespace" {
+				errMessage = fmt.Sprintf("%v: Namespace %v is not in a known list", err.Value(), err.Namespace())
+			} else if err.Tag() == "gtefield" || err.Tag() == "gtefield" {
+				errMessage = fmt.Sprintf("%v: %v(%d) should be greater than %v", err.Namespace(), err.Field(), err.Value(), err.Param())
+			} else if err.Tag() == "required_without" {
+				errMessage = fmt.Sprintf("%v: Either %v or %v should be defined", err.Namespace(), err.Field(), strings.ToLower(err.Param()))
 			}
+			return fmt.Errorf(errMessage)
 		}
 	}
 
-	if c.Static != nil {
-		for idx, job := range c.Static {
-			err := c.validateStaticJob(job, idx)
-			if err != nil {
-				return err
-			}
+	for id, job := range c.Discovery {
+		if c.Discovery[id].job, err = validateJob(job.job); err != nil {
+			return err
 		}
 	}
 
-	return nil
-}
-
-func (c *conf) validateDiscoveryJob(j job, jobIdx int) error {
-	if j.Type != "" {
-		if !stringInSlice(j.Type, supportedServices) {
-			return fmt.Errorf("Discovery job [%d]: Service is not in known list!: %s", jobIdx, j.Type)
-		}
-	} else {
-		return fmt.Errorf("Discovery job [%d]: Type should not be empty", jobIdx)
-	}
-	if len(j.Regions) == 0 {
-		return fmt.Errorf("Discovery job [%s/%d]: Regions should not be empty", j.Type, jobIdx)
-	}
-	if len(j.Metrics) == 0 {
-		return fmt.Errorf("Discovery job [%s/%d]: Metrics should not be empty", j.Type, jobIdx)
-	}
-	for metricIdx, metric := range j.Metrics {
-		parent := fmt.Sprintf("Discovery job [%s/%d]", j.Type, jobIdx)
-		err := c.validateMetric(metric, metricIdx, parent, &j)
-		if err != nil {
+	for id, job := range c.Static {
+		if c.Static[id].job, err = validateJob(job.job); err != nil {
 			return err
 		}
 	}
@@ -144,49 +117,35 @@ func (c *conf) validateDiscoveryJob(j job, jobIdx int) error {
 	return nil
 }
 
-func (c *conf) validateStaticJob(j static, jobIdx int) error {
-	if j.Name == "" {
-		return fmt.Errorf("Static job [%v]: Name should not be empty", jobIdx)
-	}
-	if j.Namespace == "" {
-		return fmt.Errorf("Static job [%s/%d]: Namespace should not be empty", j.Name, jobIdx)
-	}
-	if len(j.Regions) == 0 {
-		return fmt.Errorf("Static job [%s/%d]: Regions should not be empty", j.Name, jobIdx)
-	}
-	for metricIdx, metric := range j.Metrics {
-		err := c.validateMetric(metric, metricIdx, fmt.Sprintf("Static job [%s/%d]", j.Name, jobIdx), nil)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+func validateAWSNamespace(fl validator.FieldLevel) bool {
+	_, ok := supportedNamespaces[fl.Field().String()]
+	return ok
 }
 
-func (c *conf) validateMetric(m metric, metricIdx int, parent string, discovery *job) error {
-	if m.Name == "" {
-		return fmt.Errorf("Metric [%s/%d] in %v: Name should not be empty", m.Name, metricIdx, parent)
+func validateJob(j job) (job, error) {
+	if len(j.RoleArns) == 0 {
+		j.RoleArns = []string{""} // use current IAM role
 	}
-	if len(m.Statistics) == 0 {
-		return fmt.Errorf("Metric [%s/%d] in %v: Statistics should not be empty", m.Name, metricIdx, parent)
-	}
-	mPeriod := m.Period
-	if mPeriod == 0 && discovery != nil {
-		mPeriod = discovery.Period
-	}
-	if mPeriod < 1 {
-		return fmt.Errorf("Metric [%s/%d] in %v: Period value should be a positive integer", m.Name, metricIdx, parent)
-	}
-	mLength := m.Length
-	if mLength == 0 && discovery != nil {
-		mLength = discovery.Length
-	}
-	if mLength < mPeriod {
-		log.Warningf(
-			"Metric [%s/%d] in %v: length(%d) is smaller than period(%d). This can cause that the data requested is not ready and generate data gaps",
-			m.Name, metricIdx, parent, mLength, mPeriod)
-	}
+	for idx, metric := range j.Metrics {
+		if metric.Period == 0 {
+			if j.Period != 0 {
+				j.Metrics[idx].Period = j.Period
+			} else {
+				return j, fmt.Errorf("Field period is not defined neither for %v namespace nor for %v metric", j.Namespace, metric.Name)
+			}
+		}
 
-	return nil
+		if metric.Length == 0 {
+			if j.Length != 0 {
+				j.Metrics[idx].Length = j.Length
+			} else {
+				return j, fmt.Errorf("Field length is not defined neither for %v namespace nor for %v metric", j.Namespace, metric.Name)
+			}
+		}
+
+		if j.Metrics[idx].Length < j.Metrics[idx].Period {
+			return j, fmt.Errorf("Metric %v in %v: length(%d) is smaller than period(%d)", metric.Name, j.Namespace, j.Metrics[idx].Length, j.Metrics[idx].Period)
+		}
+	}
+	return j, nil
 }

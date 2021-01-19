@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -38,11 +37,13 @@ type cloudwatchData struct {
 	NilToZero               *bool
 	AddCloudwatchTimestamp  *bool
 	CustomTags              []tag
-	Tags                    []tag
+	Tags                    []*tag
 	Dimensions              []*cloudwatch.Dimension
 	Region                  *string
 	Period                  int64
-	endtime                time.Time
+	EndTime                 time.Time
+	Delay                   int
+	Length                  int
 }
 
 var labelMap = make(map[string][]string)
@@ -126,8 +127,10 @@ func findGetMetricDataById(getMetricDatas []cloudwatchData, value string) (cloud
 	return g, fmt.Errorf("Metric with id %s not found", value)
 }
 
-func createGetMetricDataInput(getMetricData []cloudwatchData, namespace *string, length int, delay int, now time.Time) (output *cloudwatch.GetMetricDataInput) {
+func createGetMetricDataInput(getMetricData []cloudwatchData, namespace *string, now time.Time) (output *cloudwatch.GetMetricDataInput) {
 	var metricsDataQuery []*cloudwatch.MetricDataQuery
+	var delay int
+	var length int
 	for _, data := range getMetricData {
 		metricStat := &cloudwatch.MetricStat{
 			Metric: &cloudwatch.Metric{
@@ -144,7 +147,8 @@ func createGetMetricDataInput(getMetricData []cloudwatchData, namespace *string,
 			MetricStat: metricStat,
 			ReturnData: &ReturnData,
 		})
-
+		length = data.Length
+		delay = data.Delay
 	}
 
 	var endTime time.Time
@@ -167,23 +171,6 @@ func createGetMetricDataInput(getMetricData []cloudwatchData, namespace *string,
 		ScanBy:            &dataPointOrder,
 	}
 
-	return output
-}
-
-func createListMetricsInput(dimensions []*cloudwatch.Dimension, namespace *string, metricsName *string) (output *cloudwatch.ListMetricsInput) {
-	var dimensionsFilter []*cloudwatch.DimensionFilter
-
-	for _, dim := range dimensions {
-		if dim.Value != nil {
-			dimensionsFilter = append(dimensionsFilter, &cloudwatch.DimensionFilter{Name: dim.Name, Value: dim.Value})
-		}
-	}
-	output = &cloudwatch.ListMetricsInput{
-		MetricName: metricsName,
-		Dimensions: dimensionsFilter,
-		Namespace:  namespace,
-		NextToken:  nil,
-	}
 	return output
 }
 
@@ -243,87 +230,25 @@ func (iface cloudwatchInterface) getMetricData(filter *cloudwatch.GetMetricDataI
 	return &resp
 }
 
-// https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/aws-services-cloudwatch-metrics.html
-func getNamespace(service string) (string, error) {
-	var ns string
-	var ok bool
-
-	namespaces := map[string]string{
-		"alb":                   "AWS/ApplicationELB",
-		"apigateway":            "AWS/ApiGateway",
-		"appsync":               "AWS/AppSync",
-		"asg":                   "AWS/AutoScaling",
-		"cf":                    "AWS/CloudFront",
-		"docdb":                 "AWS/DocDB",
-		"dynamodb":              "AWS/DynamoDB",
-		"ebs":                   "AWS/EBS",
-		"ec":                    "AWS/ElastiCache",
-		"ec2":                   "AWS/EC2",
-		"ec2Spot":               "AWS/EC2Spot",
-		"ecs-svc":               "AWS/ECS",
-		"ecs-containerinsights": "ECS/ContainerInsights",
-		"efs":                   "AWS/EFS",
-		"elb":                   "AWS/ELB",
-		"emr":                   "AWS/ElasticMapReduce",
-		"es":                    "AWS/ES",
-		"firehose":              "AWS/Firehose",
-		"fsx":                   "AWS/FSx",
-		"gamelift":              "AWS/GameLift",
-		"kafka":                 "AWS/Kafka",
-		"kinesis":               "AWS/Kinesis",
-		"lambda":                "AWS/Lambda",
-		"ngw":                   "AWS/NATGateway",
-		"nlb":                   "AWS/NetworkELB",
-		"rds":                   "AWS/RDS",
-		"redshift":              "AWS/Redshift",
-		"r53r":                  "AWS/Route53Resolver",
-		"s3":                    "AWS/S3",
-		"sfn":                   "AWS/States",
-		"sns":                   "AWS/SNS",
-		"sqs":                   "AWS/SQS",
-		"tgw":                   "AWS/TransitGateway",
-		"tgwa":                  "AWS/TransitGateway",
-		"vpn":                   "AWS/VPN",
-		"wafv2":                 "AWS/WAFV2",
-	}
-	if ns, ok = namespaces[service]; !ok {
-		return "", errors.New("Not implemented namespace for cloudwatch metric: " + service)
-	}
-	return ns, nil
-}
-
 func createStaticDimensions(dimensions []dimension) (output []*cloudwatch.Dimension) {
 	for _, d := range dimensions {
-		output = append(output, buildDimension(d.Name, d.Value))
+		output = append(output, &cloudwatch.Dimension{
+			Name:  &d.Name,
+			Value: &d.Value,
+		})
 	}
 
 	return output
 }
 
-func filterDimensionsWithoutValueByDimensionsWithValue(
-	dimensionsWithoutValue []*cloudwatch.Dimension,
-	dimensionsWithValue []*cloudwatch.Dimension) (dimensions []*cloudwatch.Dimension) {
-
-	for _, dimension := range dimensionsWithoutValue {
-		if !dimensionIsInListWithoutValues(dimension, dimensionsWithValue) {
-			dimensions = append(dimensions, dimension)
-		}
+func (c *cloudwatchInterface) getMetricsByName(namespace string, metric metric) (resp *cloudwatch.ListMetricsOutput) {
+	input := &cloudwatch.ListMetricsInput{
+		MetricName: &metric.Name,
+		Namespace:  &namespace,
+		NextToken:  nil,
 	}
-	return dimensions
-}
-
-func getAwsDimensions(job job) (dimensions []*cloudwatch.Dimension) {
-	for _, awsDimension := range job.AwsDimensions {
-		dimensions = append(dimensions, buildDimensionWithoutValue(awsDimension))
-	}
-	return dimensions
-}
-
-func getFullMetricsList(namespace string, metric metric, clientCloudwatch cloudwatchInterface) (resp *cloudwatch.ListMetricsOutput) {
-	c := clientCloudwatch.client
-	filter := createListMetricsInput(nil, &namespace, &metric.Name)
 	var res cloudwatch.ListMetricsOutput
-	err := c.ListMetricsPages(filter,
+	err := c.client.ListMetricsPages(input,
 		func(page *cloudwatch.ListMetricsOutput, lastPage bool) bool {
 			res.Metrics = append(res.Metrics, page.Metrics...)
 			return !lastPage
@@ -335,266 +260,32 @@ func getFullMetricsList(namespace string, metric metric, clientCloudwatch cloudw
 	return &res
 }
 
-func filterMetricsBasedOnDimensionsWithValues(
-	dimensionsWithValue []*cloudwatch.Dimension,
-	dimensionsWithoutValue []*cloudwatch.Dimension,
-	metricsToFilter *cloudwatch.ListMetricsOutput) *cloudwatch.ListMetricsOutput {
-
-	var numberOfDimensions = len(dimensionsWithValue) + len(dimensionsWithoutValue)
-	var output cloudwatch.ListMetricsOutput
-	for _, metric := range metricsToFilter.Metrics {
-		if len(metric.Dimensions) == numberOfDimensions {
-			shouldAddMetric := true
-			for _, metricDimension := range metric.Dimensions {
-				shouldAddMetric = shouldAddMetric &&
-					(dimensionIsInListWithValues(metricDimension, dimensionsWithValue) ||
-						dimensionIsInListWithoutValues(metricDimension, dimensionsWithoutValue))
-				if !shouldAddMetric {
-					break
-				}
-			}
-			if shouldAddMetric {
-				output.Metrics = append(output.Metrics, metric)
-			}
-		}
-	}
-	return &output
-}
-
-func dimensionIsInListWithValues(
-	dimension *cloudwatch.Dimension,
-	dimensionsList []*cloudwatch.Dimension) bool {
-	for _, dimensionInList := range dimensionsList {
-		if *dimension.Name == *dimensionInList.Name &&
-			*dimension.Value == *dimensionInList.Value {
-			return true
-		}
-	}
-	return false
-}
-
-func dimensionIsInListWithoutValues(
-	dimension *cloudwatch.Dimension,
-	dimensionsList []*cloudwatch.Dimension) bool {
-	for _, dimensionInList := range dimensionsList {
-		if *dimension.Name == *dimensionInList.Name {
-			return true
-		}
-	}
-	return false
-}
-
-func getDimensionfromMetric(resp *cloudwatch.ListMetricsOutput) []*cloudwatch.Dimension {
-	for _, metric := range resp.Metrics {
-		return metric.Dimensions
-	}
-	return nil
-}
-
-func queryAvailableDimensions(resource string, namespace *string, fullMetricsList *cloudwatch.ListMetricsOutput) (dimensions []*cloudwatch.Dimension) {
-
-	if !strings.HasSuffix(*namespace, "ApplicationELB") && !strings.HasSuffix(*namespace, "NetworkELB") {
-		log.Fatal("Not implemented queryAvailableDimensions: " + *namespace)
-		return nil
-	}
-
-	if strings.HasPrefix(resource, "targetgroup/") {
-		dimensions = append(dimensions, buildDimension("TargetGroup", resource))
-		resp := filterMetricsBasedOnDimensionsWithValues(dimensions, []*cloudwatch.Dimension{buildDimensionWithoutValue("LoadBalancer")}, fullMetricsList)
-		if resp != nil {
-			dimensions = getDimensionfromMetric(resp)
-		}
-
-	} else if strings.HasPrefix(resource, "loadbalancer/") || strings.HasPrefix(resource, "net/") || strings.HasPrefix(resource, "app/") {
-		trimmedDimensionValue := strings.Replace(resource, "loadbalancer/", "", -1)
-		dimensions = append(dimensions, buildDimension("LoadBalancer", trimmedDimensionValue))
-	}
-	return dimensions
-}
-
-func detectDimensionsByService(resource *tagsData, fullMetricsList *cloudwatch.ListMetricsOutput) (dimensions []*cloudwatch.Dimension) {
-	resourceArn := *resource.ID
-	service := *resource.Service
-	if service == "ec2Spot" {
-		return dimensions
-
-	}
-	arnParsed, err := arn.Parse(resourceArn)
-
-	if err != nil && service != "tgwa" {
-		log.Warningf("Unable to parse ARN (%s) on %s due to %v", resourceArn, service, err)
-		return dimensions
-	}
-
-	type baseParams struct {
-		Key    string
-		Prefix string
-	}
-	baseDimension := map[string]baseParams{
-		"appsync":  {Key: "GraphQLAPIId", Prefix: "apis/"},
-		"asg":      {Key: "AutoScalingGroupName", Prefix: "autoScalingGroupName/"},
-		"dynamodb": {Key: "TableName", Prefix: "table/"},
-		"ebs":      {Key: "VolumeId", Prefix: "volume/"},
-		"ec":       {Key: "CacheClusterId", Prefix: "cluster:"},
-		"ec2":      {Key: "InstanceId", Prefix: "instance/"},
-		"efs":      {Key: "FileSystemId", Prefix: "file-system/"},
-		"elb":      {Key: "LoadBalancerName", Prefix: "loadbalancer/"},
-		"emr":      {Key: "JobFlowId", Prefix: "cluster/"},
-		"firehose": {Key: "DeliveryStreamName", Prefix: "deliverystream/"},
-		"fsx":      {Key: "FileSystemId", Prefix: "file-system/"},
-		"gamelift": {Key: "FleetId", Prefix: "fleet/"},
-		"kinesis":  {Key: "StreamName", Prefix: "stream/"},
-		"lambda":   {Key: "FunctionName", Prefix: "function:"},
-		"ngw":      {Key: "NatGatewayId", Prefix: "natgateway/"},
-		"redshift": {Key: "ClusterIdentifier", Prefix: "cluster:"},
-		"r53r":     {Key: "EndpointId", Prefix: "resolver-endpoint/"},
-		"s3":       {Key: "BucketName", Prefix: ""},
-		"sns":      {Key: "TopicName", Prefix: ""},
-		"sqs":      {Key: "QueueName", Prefix: ""},
-		"tgw":      {Key: "TransitGateway", Prefix: "transit-gateway/"},
-		"vpn":      {Key: "VpnId", Prefix: "vpn-connection/"},
-	}
-	if params, ok := baseDimension[service]; ok {
-		return buildBaseDimension(arnParsed.Resource, params.Key, params.Prefix)
-	}
-	switch service {
-	case "alb", "nlb":
-		namespace, _ := getNamespace(service)
-		dimensions = queryAvailableDimensions(arnParsed.Resource, &namespace, fullMetricsList)
-	case "apigateway":
-		// https://docs.aws.amazon.com/apigateway/latest/developerguide/arn-format-reference.html
-		dimensions = buildBaseDimension(*resource.Matcher, "ApiName", "")
-		gatewayType := strings.Split(arnParsed.Resource, "/")[1]
-		switch gatewayType {
-		case "restapis", "apis":
-			// /stages/stage-name
-			stageRegex := regexp.MustCompile(`stages/(\S+)`)
-			stageMatches := stageRegex.FindStringSubmatch(arnParsed.Resource)
-			if len(stageMatches) > 0 {
-				dimensions = append(dimensions, buildDimension("Stage", stageMatches[1]))
-			}
-			// /resources/resource-id
-			resourceRegex := regexp.MustCompile(`resources/(\S+)`)
-			resourceMatches := resourceRegex.FindStringSubmatch(arnParsed.Resource)
-			if len(resourceMatches) > 0 {
-				dimensions = append(dimensions, buildDimension("Resources", resourceMatches[1]))
-			}
-			// /methods/http-method
-			// only for restapis
-			if gatewayType == "restapis" {
-				methodRegex := regexp.MustCompile(`methods/(\S+)`)
-				methodMatches := methodRegex.FindStringSubmatch(arnParsed.Resource)
-				if len(methodMatches) > 0 {
-					dimensions = append(dimensions, buildDimension("Method", methodMatches[1]))
+func (r *tagsData) getDimensions(metrics []*cloudwatch.Metric) (dimensions []*cloudwatch.Dimension) {
+	detectedDimensions := make(map[string]string)
+	if params, ok := supportedNamespaces[*r.Namespace]; ok {
+		for _, d := range params.Dimensions {
+			regex := regexp.MustCompile(d)
+			if regex.Match([]byte(*r.ID)) {
+				match := regex.FindStringSubmatch(*r.ID)
+				for i, value := range match {
+					if regex.SubexpNames()[i] != "" {
+						detectedDimensions[regex.SubexpNames()[i]] = value
+					}
 				}
 			}
 		}
-	case "cf":
-		dimensions = buildBaseDimension(arnParsed.Resource, "DistributionId", "distribution/")
-		dimensions = append(dimensions, buildDimension("Region", "Global"))
-	case "docdb":
-		if strings.HasPrefix(arnParsed.Resource, "cluster:") {
-			dimensions = buildBaseDimension(arnParsed.Resource, "DBClusterIdentifier", "cluster:")
-		} else {
-			dimensions = buildBaseDimension(arnParsed.Resource, "DBInstanceIdentifier", "db:")
-		}
-	case "ecs-svc", "ecs-containerinsights":
-		parsedResource := strings.Split(arnParsed.Resource, "/")
-		if parsedResource[0] == "service" {
-			dimensions = append(dimensions, buildDimension("ClusterName", parsedResource[1]), buildDimension("ServiceName", parsedResource[2]))
-		}
-		if parsedResource[0] == "cluster" {
-			dimensions = append(dimensions, buildDimension("ClusterName", parsedResource[1]))
-		}
-	case "es":
-		dimensions = buildBaseDimension(arnParsed.Resource, "DomainName", "domain/")
-		dimensions = append(dimensions, buildDimension("ClientId", arnParsed.AccountID))
-	case "rds":
-		if strings.HasPrefix(arnParsed.Resource, "cluster:") {
-			dimensions = buildBaseDimension(arnParsed.Resource, "DBClusterIdentifier", "cluster:")
-		} else {
-			dimensions = buildBaseDimension(arnParsed.Resource, "DBInstanceIdentifier", "db:")
-		}
-	case "sfn":
-		// The value of StateMachineArn returned is the Name, not the ARN
-		// We are setting the value to the ARN in order to correlate dimensions with metric values
-		// (StateMachineArn will be set back to the name later, once all the filtering is complete)
-		// https://docs.aws.amazon.com/step-functions/latest/dg/procedure-cw-metrics.html
-		dimensions = append(dimensions, buildDimension("StateMachineArn", resourceArn))
-	case "tgwa":
-		parsedResource := strings.Split(resourceArn, "/")
-		dimensions = append(dimensions, buildDimension("TransitGateway", parsedResource[0]), buildDimension("TransitGatewayAttachment", parsedResource[1]))
-	case "kafka":
-		cluster := strings.Split(arnParsed.Resource, "/")[1]
-		dimensions = append(dimensions, buildDimension("Cluster Name", cluster))
-	case "wafv2":
-		aclId := strings.Split(resourceArn, "/")[2]
-		dimensions = append(dimensions, buildDimension("WebACL", aclId))
-	default:
-		log.Fatal("Not implemented cloudwatch metric: " + service)
-	}
-
-	return dimensions
-}
-
-func addAdditionalDimensions(startingDimensions []*cloudwatch.Dimension, additionalDimensions []dimension) (dimensions []*cloudwatch.Dimension) {
-	// Copy startingDimensions before appending additionalDimensions, since append(x, ...) can modify x
-	dimensions = append(dimensions, startingDimensions...)
-	for _, dimension := range additionalDimensions {
-		dimensions = append(dimensions, buildDimension(dimension.Name, dimension.Value))
-	}
-	return dimensions
-}
-
-func buildBaseDimension(identifier string, dimensionKey string, prefix string) (dimensions []*cloudwatch.Dimension) {
-	helper := strings.TrimPrefix(identifier, prefix)
-	dimensions = append(dimensions, buildDimension(dimensionKey, helper))
-	return dimensions
-}
-
-func buildDimensionWithoutValue(key string) *cloudwatch.Dimension {
-	dimension := cloudwatch.Dimension{
-		Name: &key,
-	}
-	return &dimension
-}
-
-func buildDimension(key string, value string) *cloudwatch.Dimension {
-	dimension := cloudwatch.Dimension{
-		Name:  &key,
-		Value: &value,
-	}
-	return &dimension
-}
-
-func fixServiceName(serviceName *string, dimensions []*cloudwatch.Dimension) string {
-	var suffixName string
-
-	if *serviceName == "alb" || *serviceName == "nlb" {
-		var albSuffix, tgSuffix string
-		for _, dimension := range dimensions {
-			if *dimension.Name == "TargetGroup" {
-				tgSuffix = "tg"
-			}
-			if *dimension.Name == "LoadBalancer" {
-				albSuffix = *serviceName
-			}
-		}
-		if albSuffix != "" && tgSuffix != "" {
-			return albSuffix + "_" + tgSuffix
-		} else if albSuffix == "" && tgSuffix != "" {
-			return tgSuffix
-		}
-	}
-
-	if *serviceName == "elb" {
-		for _, dimension := range dimensions {
-			if *dimension.Name == "AvailabilityZone" {
-				suffixName = "_az"
+		if len(detectedDimensions) > 0 {
+			for _, metric := range metrics {
+				for _, dimension := range metric.Dimensions {
+					value, exists := detectedDimensions[*dimension.Name]
+					if exists && value == *dimension.Value {
+						return metric.Dimensions
+					}
+				}
 			}
 		}
 	}
-	return promString(*serviceName) + suffixName
+	return dimensions
 }
 
 func getStateMachineNameFromArn(resourceArn string) string {
@@ -754,10 +445,10 @@ func migrateCloudwatchToPrometheus(cwd []*cloudwatchData) []*PrometheusMetric {
 					exportedDatapoint = &zero
 				}
 			}
-			serviceName := fixServiceName(c.Service, c.Dimensions)
-			name := "aws_" + serviceName + "_" + strings.ToLower(promString(*c.Metric)) + "_" + strings.ToLower(promString(statistic))
+			reg := regexp.MustCompile(`.*/([^ ]*)`)
+			res := reg.ReplaceAllString(*c.Service, "${1}")
+			name := "aws_" + strings.ToLower(res) + "_" + strings.ToLower(promString(*c.Metric)) + "_" + strings.ToLower(promString(statistic))
 			if exportedDatapoint != nil {
-
 				promLabels := createPrometheusLabels(c)
 				recordLabelsForMetric(name, promLabels)
 				p := PrometheusMetric{

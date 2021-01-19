@@ -1,11 +1,11 @@
-discovery:
+global:
   exportedTagsOnMetrics:
-    ec2:
+    AWS/EC2:
       - Name
-    ebs:
+    AWS/EBS:
       - VolumeId
-  jobs:
-  - type: es
+discovery:
+  - namespace: AWS/ES
     regions:
       - eu-west-1
     searchTags:
@@ -15,33 +15,28 @@ discovery:
       - name: FreeStorageSpace
         statistics:
         - Sum
-        period: 600
-        length: 60
+        period: 60
+        length: 600
       - name: ClusterStatus.green
         statistics:
         - Minimum
-        period: 600
-        length: 60
+        period: 60
+        length: 600
       - name: ClusterStatus.yellow
         statistics:
         - Maximum
-        period: 600
-        length: 60
+        period: 60
+        length: 600
       - name: ClusterStatus.red
         statistics:
         - Maximum
-        period: 600
-        length: 60
-  - type: elb
+        period: 60
+        length: 600
+  - namespace: AWS/ELB
     regions:
       - eu-west-1
     length: 900
     delay: 120
-    awsDimensions:
-     - AvailabilityZone
-    searchTags:
-      - Key: KubernetesCluster
-        Value: production-19
     metrics:
       - name: HealthyHostCount
         statistics:
@@ -55,18 +50,18 @@ discovery:
         length: 900 #(this will be ignored)
         delay: 300 #(this will be ignored)
         nilToZero: true
-  - type: alb
+  - namespace: AWS/ApplicationELB
     regions:
       - eu-west-1
     searchTags:
       - Key: kubernetes.io/service-name
         Value: .*
     metrics:
-      - name: UnHealthyHostCount
+      - name: HealthyHostCount
         statistics: [Maximum]
         period: 60
         length: 600
-  - type: vpn
+  - namespace: AWS/VPN
     regions:
       - eu-west-1
     searchTags:
@@ -78,7 +73,7 @@ discovery:
         - p90
         period: 60
         length: 300
-  - type: kinesis
+  - namespace: AWS/Kinesis
     regions:
       - eu-west-1
     metrics:
@@ -87,7 +82,7 @@ discovery:
         - Sum
         period: 60
         length: 300
-  - type: s3
+  - namespace: AWS/S3
     regions:
       - eu-west-1
     searchTags:
@@ -99,23 +94,14 @@ discovery:
           - Average
         period: 86400
         length: 172800
-        additionalDimensions:
-          - name: StorageType
-            value: AllStorageTypes
       - name: BucketSizeBytes
         statistics:
           - Average
         period: 86400
         length: 172800
-        additionalDimensions:
-          - name: StorageType
-            value: StandardStorage
-  - type: ebs
+  - namespace: AWS/EBS
     regions:
       - eu-west-1
-    searchTags:
-      - Key: type
-        Value: public
     metrics:
       - name: BurstBalance
         statistics:
@@ -123,15 +109,12 @@ discovery:
         period: 600
         length: 600
         addCloudwatchTimestamp: true
-  - type: kafka
+  - namespace: AWS/Kafka
     regions:
       - eu-west-1
     searchTags:
       - Key: env
         Value: dev
-    awsDimensions:
-      - Broker ID
-      - Topic
     metrics:
       - name: BytesOutPerSec
         statistics:
