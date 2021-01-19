@@ -107,41 +107,44 @@ func (iface tagsInterface) get(job discovery, region string) (resources []*tagsD
 	case "AWS/EC2Spot":
 		return iface.getTaggedEC2SpotInstances(job, region)
 	}
-	var inputparams r.GetResourcesInput
-	if nsConfig, ok := supportedNamespaces[job.Namespace]; ok {
-		resourceTypeFilters := nsConfig.Resources
-		var filters []*string
-		for _, filter := range resourceTypeFilters {
-			filters = append(filters, aws.String(filter))
-		}
-		inputparams.ResourceTypeFilters = filters
-	} else {
-		log.Fatal("Not implemented resources:" + job.Namespace)
+	var inputParams r.GetResourcesInput
+	nsConfig := supportedNamespaces[job.Namespace]
+	resourceTypeFilters := nsConfig.Resources
+	var filters []*string
+	for _, filter := range resourceTypeFilters {
+		filters = append(filters, aws.String(filter))
 	}
+	inputParams.ResourceTypeFilters = filters
 	c := iface.client
 	ctx := context.Background()
 	pageNum := 0
-	resourcePages := c.GetResourcesPagesWithContext(ctx, &inputparams, func(page *r.GetResourcesOutput, lastPage bool) bool {
-		pageNum++
-		resourceGroupTaggingAPICounter.Inc()
-		for _, resourceTagMapping := range page.ResourceTagMappingList {
-			resource := tagsData{}
+	if len(nsConfig.Resources) > 0 {
+		err = c.GetResourcesPagesWithContext(ctx, &inputParams, func(page *r.GetResourcesOutput, lastPage bool) bool {
+			pageNum++
+			resourceGroupTaggingAPICounter.Inc()
+			for _, resourceTagMapping := range page.ResourceTagMappingList {
+				resource := tagsData{
+					ID:        resourceTagMapping.ResourceARN,
+					Namespace: &job.Namespace,
+					Region:    &region,
+				}
+				for _, t := range resourceTagMapping.Tags {
+					resource.Tags = append(resource.Tags, &tag{Key: *t.Key, Value: *t.Value})
+				}
 
-			resource.ID = resourceTagMapping.ResourceARN
-
-			resource.Namespace = &job.Namespace
-			resource.Region = &region
-
-			for _, t := range resourceTagMapping.Tags {
-				resource.Tags = append(resource.Tags, &tag{Key: *t.Key, Value: *t.Value})
+				if resource.filterThroughTags(job.FilterTags) {
+					resources = append(resources, &resource)
+				}
 			}
-
-			if resource.filterThroughTags(job.FilterTags) {
-				resources = append(resources, &resource)
-			}
-		}
-		return pageNum < 100
-	})
+			return pageNum < 100
+		})
+	}
+	if nsConfig.GlobalMetrics {
+		resources = append(resources, &tagsData{
+			Namespace: &job.Namespace,
+			Region:    &region,
+		})
+	}
 
 	switch job.Namespace {
 	case "AWS/ApiGateway":
@@ -171,7 +174,7 @@ func (iface tagsInterface) get(job discovery, region string) (resources []*tagsD
 		}
 		resources = filteredResources
 	}
-	return resources, resourcePages
+	return resources, err
 }
 
 // Once the resourcemappingapi supports ASGs then this workaround method can be deleted
@@ -276,8 +279,9 @@ func migrateTagsToPrometheus(tagData []*tagsData) []*PrometheusMetric {
 		service := parts[len(parts)-1]
 		name := "aws_" + promString(service) + "_info"
 		promLabels := make(map[string]string)
-		promLabels["name"] = *d.ID
-
+		if d.ID != nil {
+			promLabels["name"] = *d.ID
+		}
 		for _, entry := range tagList[*d.Namespace] {
 			labelKey := "tag_" + promStringTag(entry)
 			promLabels[labelKey] = ""

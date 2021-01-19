@@ -261,23 +261,29 @@ func (c *cloudwatchInterface) getMetricsByName(namespace string, metric metric) 
 func (r *tagsData) getDimensions(metrics []*cloudwatch.Metric) (dimensions [][]*cloudwatch.Dimension) {
 	detectedDimensions := make(map[string]string)
 	if params, ok := supportedNamespaces[*r.Namespace]; ok {
-		for _, d := range params.Dimensions {
-			regex := regexp.MustCompile(d)
-			if regex.Match([]byte(*r.ID)) {
-				match := regex.FindStringSubmatch(*r.ID)
-				for i, value := range match {
-					if regex.SubexpNames()[i] != "" {
-						detectedDimensions[regex.SubexpNames()[i]] = value
+		if r.ID != nil {
+			for _, d := range params.Dimensions {
+				regex := regexp.MustCompile(d)
+				if regex.Match([]byte(*r.ID)) {
+					match := regex.FindStringSubmatch(*r.ID)
+					for i, value := range match {
+						if regex.SubexpNames()[i] != "" {
+							detectedDimensions[regex.SubexpNames()[i]] = value
+						}
 					}
 				}
 			}
 		}
-		if len(detectedDimensions) > 0 {
+		if len(detectedDimensions) > 0 || r.ID == nil {
 			for _, metric := range metrics {
-				for _, dimension := range metric.Dimensions {
-					value, exists := detectedDimensions[*dimension.Name]
-					if exists && value == *dimension.Value {
-						dimensions = append(dimensions, metric.Dimensions)
+				if r.ID == nil {
+					dimensions = append(dimensions, metric.Dimensions)
+				} else {
+					for _, dimension := range metric.Dimensions {
+						value, exists := detectedDimensions[*dimension.Name]
+						if exists && value == *dimension.Value {
+							dimensions = append(dimensions, metric.Dimensions)
+						}
 					}
 				}
 			}
@@ -289,7 +295,7 @@ func (r *tagsData) getDimensions(metrics []*cloudwatch.Metric) (dimensions [][]*
 
 func (c *cloudwatchData) createPrometheusLabels() map[string]string {
 	labels := make(map[string]string)
-	if len(c.Dimensions) == 0 {
+	if len(c.Dimensions) == 0 && c.ID != nil {
 		labels["name"] = *c.ID
 	}
 	labels["region"] = *c.Region

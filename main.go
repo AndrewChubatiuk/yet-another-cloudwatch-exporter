@@ -22,8 +22,9 @@ type PromStats struct {
 }
 
 type resource struct {
-	Resources  []string
-	Dimensions []string
+	Resources     []string
+	Dimensions    []string
+	GlobalMetrics bool
 }
 
 var (
@@ -64,13 +65,15 @@ var (
 			},
 		},
 		"AWS/AutoScaling": {
-			Resources: []string{"cloudfront"},
 			Dimensions: []string{
 				"autoScalingGroupName/(?P<AutoScalingGroupName>[^/]+)",
 			},
 		},
+		"AWS/Billing": {
+			GlobalMetrics: true,
+		},
 		"AWS/CloudFront": {
-			Resources: []string{},
+			Resources: []string{"cloudfront:distribution"},
 			Dimensions: []string{
 				"distribution/(?P<DistributionId>[^/]+)",
 			},
@@ -93,6 +96,7 @@ var (
 			Dimensions: []string{
 				":table/(?P<TableName>[^/]+)",
 			},
+			GlobalMetrics: true,
 		},
 		"AWS/EBS": {
 			Resources: []string{"ec2:volume"},
