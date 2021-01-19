@@ -147,6 +147,7 @@ func getMetricDataForQueries(
 			if len(cloudwatchOutputs.Metrics) == 0 {
 				break
 			}
+			metricTags := resource.metricTags(tagsOnMetrics)
 			dimensions := resource.getDimensions(cloudwatchOutputs.Metrics)
 			for _, stats := range metric.Statistics {
 				id := fmt.Sprintf("id_%d", rand.Int())
@@ -158,7 +159,7 @@ func getMetricDataForQueries(
 					Statistics:             []string{stats},
 					NilToZero:              &metric.NilToZero,
 					AddCloudwatchTimestamp: &metric.AddCloudwatchTimestamp,
-					Tags:                   resource.Tags,
+					Tags:                   metricTags,
 					CustomTags:             discoveryJob.CustomTags,
 					Dimensions:             dimensions,
 					Region:                 &region,
@@ -245,10 +246,10 @@ func (r tagsData) filterThroughTags(filterTags []tag) bool {
 	return tagMatches == len(filterTags)
 }
 
-func (r tagsData) metricTags(tagsOnMetrics exportedTagsOnMetrics) []tag {
-	tags := make([]tag, 0)
+func (r tagsData) metricTags(tagsOnMetrics exportedTagsOnMetrics) []*tag {
+	tags := make([]*tag, 0)
 	for _, tagName := range tagsOnMetrics[*r.Namespace] {
-		tag := tag{
+		tag := &tag{
 			Key: tagName,
 		}
 		for _, resourceTag := range r.Tags {

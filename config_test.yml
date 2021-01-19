@@ -1,16 +1,18 @@
 global:
   exportedTagsOnMetrics:
-    AWS/EC2:
-      - Name
+    AWS/ES:
+      - Purpose
+      - Client
+      - Environment
     AWS/EBS:
       - VolumeId
 discovery:
   - namespace: AWS/ES
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: type
-        Value: ^(easteregg|k8s)$
+        Value: test
     metrics:
       - name: FreeStorageSpace
         statistics:
@@ -35,6 +37,9 @@ discovery:
   - namespace: AWS/ELB
     regions:
       - eu-west-1
+    filterTags:
+      - Key: type
+        Value: test
     length: 900
     delay: 120
     metrics:
@@ -53,7 +58,7 @@ discovery:
   - namespace: AWS/ApplicationELB
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: kubernetes.io/service-name
         Value: .*
     metrics:
@@ -64,7 +69,7 @@ discovery:
   - namespace: AWS/VPN
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: kubernetes.io/service-name
         Value: .*
     metrics:
@@ -85,7 +90,7 @@ discovery:
   - namespace: AWS/S3
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: type
         Value: public
     metrics:
@@ -102,6 +107,9 @@ discovery:
   - namespace: AWS/EBS
     regions:
       - eu-west-1
+    filterTags:
+      - Key: type
+        Value: test
     metrics:
       - name: BurstBalance
         statistics:
@@ -112,7 +120,7 @@ discovery:
   - namespace: AWS/Kafka
     regions:
       - eu-west-1
-    searchTags:
+    filterTags:
       - Key: env
         Value: dev
     metrics:
