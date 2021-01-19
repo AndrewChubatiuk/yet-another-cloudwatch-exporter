@@ -149,25 +149,26 @@ func getMetricDataForQueries(
 				break
 			}
 			metricTags := resource.metricTags(tagsOnMetrics)
-			dimensions := resource.getDimensions(cloudwatchOutputs.Metrics)
-			for _, stats := range metric.Statistics {
-				id := fmt.Sprintf("id_%d", rand.Int())
-				getMetricDatas = append(getMetricDatas, cloudwatchData{
-					ID:                     resource.ID,
-					MetricID:               &id,
-					Metric:                 &metric.Name,
-					Service:                resource.Namespace,
-					Statistics:             []string{stats},
-					NilToZero:              &metric.NilToZero,
-					AddCloudwatchTimestamp: &metric.AddCloudwatchTimestamp,
-					Tags:                   metricTags,
-					CustomTags:             discoveryJob.CustomTags,
-					Dimensions:             dimensions,
-					Region:                 &region,
-					Period:                 int64(metric.Period),
-					Delay:                  metric.Delay,
-					Length:                 metric.Length,
-				})
+			for _, dimensions := range resource.getDimensions(cloudwatchOutputs.Metrics) {
+				for _, stats := range metric.Statistics {
+					id := fmt.Sprintf("id_%d", rand.Int())
+					getMetricDatas = append(getMetricDatas, cloudwatchData{
+						ID:                     resource.ID,
+						MetricID:               &id,
+						Metric:                 &metric.Name,
+						Service:                resource.Namespace,
+						Statistics:             []string{stats},
+						NilToZero:              &metric.NilToZero,
+						AddCloudwatchTimestamp: &metric.AddCloudwatchTimestamp,
+						Tags:                   metricTags,
+						CustomTags:             discoveryJob.CustomTags,
+						Dimensions:             dimensions,
+						Region:                 &region,
+						Period:                 int64(metric.Period),
+						Delay:                  metric.Delay,
+						Length:                 metric.Length,
+					})
+				}
 			}
 		}
 	}
