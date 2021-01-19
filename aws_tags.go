@@ -258,16 +258,23 @@ func migrateTagsToPrometheus(tagData []*tagsData) []*PrometheusMetric {
 
 	for _, d := range tagData {
 		for _, entry := range d.Tags {
-			for _, v := range tagList[*d.Namespace] {
-				if v == entry.Key {
-					tagList[*d.Namespace] = append(tagList[*d.Namespace], entry.Key)
+			found := false
+			for _, tag := range tagList[*d.Namespace] {
+				if tag == entry.Key {
+					found = true
+					break
 				}
+			}
+			if !found {
+				tagList[*d.Namespace] = append(tagList[*d.Namespace], entry.Key)
 			}
 		}
 	}
 
 	for _, d := range tagData {
-		name := "aws_" + promString(*d.Namespace) + "_info"
+		parts := strings.Split(*d.Namespace, "/")
+		service := parts[len(parts)-1]
+		name := "aws_" + promString(service) + "_info"
 		promLabels := make(map[string]string)
 		promLabels["name"] = *d.ID
 

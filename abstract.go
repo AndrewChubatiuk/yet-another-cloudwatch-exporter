@@ -92,7 +92,8 @@ func scrapeStaticJob(resource static, region string, clientCloudwatch cloudwatch
 			}()
 
 			id := resource.Name
-			service := strings.TrimPrefix(resource.Namespace, "AWS/")
+			parts := strings.Split(resource.Namespace, "/")
+			service := parts[len(parts)-1]
 			data := cloudwatchData{
 				ID:                     &id,
 				Metric:                 &metric.Name,

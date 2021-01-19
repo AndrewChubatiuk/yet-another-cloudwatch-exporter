@@ -1,7 +1,6 @@
 global:
   exportedTagsOnMetrics:
     AWS/ES:
-      - Purpose
       - Client
       - Environment
     AWS/EBS:
@@ -10,9 +9,6 @@ discovery:
   - namespace: AWS/ES
     regions:
       - eu-west-1
-    filterTags:
-      - Key: type
-        Value: test
     metrics:
       - name: FreeStorageSpace
         statistics:
