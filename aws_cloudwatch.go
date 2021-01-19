@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/arn"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
@@ -237,7 +236,6 @@ func createStaticDimensions(dimensions []dimension) (output []*cloudwatch.Dimens
 			Value: &d.Value,
 		})
 	}
-
 	return output
 }
 
@@ -288,38 +286,18 @@ func (r *tagsData) getDimensions(metrics []*cloudwatch.Metric) (dimensions []*cl
 	return dimensions
 }
 
-func getStateMachineNameFromArn(resourceArn string) string {
-	arnParsed, err := arn.Parse(resourceArn)
-	if err != nil {
-		log.Warningf("Unable to parse ARN (%s) due to %v", resourceArn, err)
-		return ""
-	}
-	parsedResource := strings.Split(arnParsed.Resource, ":")
-	return parsedResource[1]
-}
-
-func createPrometheusLabels(cwd *cloudwatchData) map[string]string {
-	labels := make(map[string]string)
-	labels["name"] = *cwd.ID
-	labels["region"] = *cwd.Region
-
-	// Inject the sfn name back as a label
-	switch *cwd.Service {
-	case "sfn":
-		labels["dimension_"+promStringTag("StateMachineArn")] = getStateMachineNameFromArn(*cwd.ID)
-	}
-
-	for _, dimension := range cwd.Dimensions {
+func (c *cloudwatchData) createPrometheusLabels() (labels map[string]string) {
+	labels["name"] = *c.ID
+	labels["region"] = *c.Region
+	for _, dimension := range c.Dimensions {
 		labels["dimension_"+promStringTag(*dimension.Name)] = *dimension.Value
 	}
-
-	for _, label := range cwd.CustomTags {
+	for _, label := range c.CustomTags {
 		labels["custom_tag_"+promStringTag(label.Key)] = label.Value
 	}
-	for _, tag := range cwd.Tags {
+	for _, tag := range c.Tags {
 		labels["tag_"+promStringTag(tag.Key)] = tag.Value
 	}
-
 	return labels
 }
 
@@ -344,15 +322,11 @@ func recordLabelsForMetric(metricName string, promLabels map[string]string) {
 	labelMap[metricName] = workingLabelsCopy[:j+1]
 }
 
-func ensureLabelConsistencyForMetrics(metrics []*PrometheusMetric) []*PrometheusMetric {
-	var updatedMetrics []*PrometheusMetric
-
+func ensureLabelConsistencyForMetrics(metrics []*PrometheusMetric) (output []*PrometheusMetric) {
 	for _, prometheusMetric := range metrics {
 		metricName := prometheusMetric.name
 		metricLabels := prometheusMetric.labels
-
 		consistentMetricLabels := make(map[string]string)
-
 		for _, recordedLabel := range labelMap[*metricName] {
 			if value, ok := metricLabels[recordedLabel]; ok {
 				consistentMetricLabels[recordedLabel] = value
@@ -361,9 +335,9 @@ func ensureLabelConsistencyForMetrics(metrics []*PrometheusMetric) []*Prometheus
 			}
 		}
 		prometheusMetric.labels = consistentMetricLabels
-		updatedMetrics = append(updatedMetrics, prometheusMetric)
+		output = append(output, prometheusMetric)
 	}
-	return updatedMetrics
+	return output
 }
 
 func sortByTimestamp(datapoints []*cloudwatch.Datapoint) []*cloudwatch.Datapoint {
@@ -374,15 +348,15 @@ func sortByTimestamp(datapoints []*cloudwatch.Datapoint) []*cloudwatch.Datapoint
 	return datapoints
 }
 
-func getDatapoint(cwd *cloudwatchData, statistic string) (*float64, time.Time) {
-	if cwd.GetMetricDataPoint != nil {
-		return cwd.GetMetricDataPoint, *cwd.GetMetricDataTimestamps
+func (c *cloudwatchData) getDatapoint(statistic string) (*float64, time.Time) {
+	if c.GetMetricDataPoint != nil {
+		return c.GetMetricDataPoint, *c.GetMetricDataTimestamps
 	}
 	var averageDataPoints []*cloudwatch.Datapoint
 
 	// sorting by timestamps so we can consistently export the most updated datapoint
 	// assuming Timestamp field in cloudwatch.Datapoint struct is never nil
-	for _, datapoint := range sortByTimestamp(cwd.Points) {
+	for _, datapoint := range sortByTimestamp(c.Points) {
 		switch {
 		case statistic == "Maximum":
 			if datapoint.Maximum != nil {
@@ -435,7 +409,7 @@ func migrateCloudwatchToPrometheus(cwd []*cloudwatchData) []*PrometheusMetric {
 	for _, c := range cwd {
 		for _, statistic := range c.Statistics {
 			includeTimestamp := *c.AddCloudwatchTimestamp
-			exportedDatapoint, timestamp := getDatapoint(c, statistic)
+			exportedDatapoint, timestamp := c.getDatapoint(statistic)
 			if exportedDatapoint == nil {
 				var nan float64 = math.NaN()
 				exportedDatapoint = &nan
@@ -449,7 +423,7 @@ func migrateCloudwatchToPrometheus(cwd []*cloudwatchData) []*PrometheusMetric {
 			res := reg.ReplaceAllString(*c.Service, "${1}")
 			name := "aws_" + strings.ToLower(res) + "_" + strings.ToLower(promString(*c.Metric)) + "_" + strings.ToLower(promString(statistic))
 			if exportedDatapoint != nil {
-				promLabels := createPrometheusLabels(c)
+				promLabels := c.createPrometheusLabels()
 				recordLabelsForMetric(name, promLabels)
 				p := PrometheusMetric{
 					name:             &name,
