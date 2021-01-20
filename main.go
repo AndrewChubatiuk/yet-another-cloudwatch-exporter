@@ -201,6 +201,7 @@ var (
 			Dimensions: []string{
 				":function:(?P<FunctionName>[^/]+)",
 			},
+			GlobalMetrics: true,
 		},
 		"AWS/NATGateway": {
 			Resources: []string{"ec2:natgateway"},
@@ -239,6 +240,9 @@ var (
 			Dimensions: []string{
 				"(?P<BucketName>[^:]+)$",
 			},
+		},
+		"AWS/SES": {
+			GlobalMetrics: true,
 		},
 		"AWS/States": {
 			Resources: []string{"states"},

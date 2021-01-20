@@ -20,6 +20,7 @@ YACE is currently in quick iteration mode. Things will probably break in upcomin
   * AWS/ApplicationELB - Application Load Balancer
   * AWS/ApiGateway - Api Gateway
   * AWS/AppSync - AppSync
+  * AWS/Billing - AWS Billing Estimated Costs
   * AWS/CloudFront - Cloud Front
   * AWS/Cognito - Cognito User Pool
   * AWS/DocDB - DocumentDB (with MongoDB compatibility)
@@ -150,7 +151,7 @@ general setting.  The currently inherited settings are period, and addCloudwatch
 ```yaml
 global:
   exportedTagsOnMetrics:
-    AWS/EC22:
+    AWS/EC2:
       - Name
     AWS/EBS:
       - VolumeId

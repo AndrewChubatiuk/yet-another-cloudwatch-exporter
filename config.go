@@ -42,16 +42,16 @@ type static struct {
 }
 
 type metricsCommon struct {
-	Period                 int  `yaml:"period" validate:"omitempty,gte=1"`
-	Length                 int  `yaml:"length" validate:"omitempty,gtefield=Period"`
-	Delay                  int  `yaml:"delay"`
-	AddCloudwatchTimestamp bool `yaml:"addCloudwatchTimestamp"`
+	Period                 int   `yaml:"period" validate:"omitempty,gte=1"`
+	Length                 int   `yaml:"length" validate:"omitempty,gtefield=Period"`
+	Delay                  int   `yaml:"delay"`
+	AddCloudwatchTimestamp bool  `yaml:"addCloudwatchTimestamp"`
+	NilToZero              *bool `yaml:"nilToZero"`
 }
 
 type metric struct {
 	Name          string   `yaml:"name" validate:"required"`
 	Statistics    []string `yaml:"statistics" validate:"required"`
-	NilToZero     bool     `yaml:"nilToZero"`
 	metricsCommon `yaml:",inline"`
 }
 
@@ -131,7 +131,7 @@ func validateJob(j job) (job, error) {
 			if j.Period != 0 {
 				j.Metrics[idx].Period = j.Period
 			} else {
-				return j, fmt.Errorf("Field period is not defined neither for %v namespace nor for %v metric", j.Namespace, metric.Name)
+				j.Metrics[idx].Period = 60
 			}
 		}
 
@@ -139,7 +139,15 @@ func validateJob(j job) (job, error) {
 			if j.Length != 0 {
 				j.Metrics[idx].Length = j.Length
 			} else {
-				return j, fmt.Errorf("Field length is not defined neither for %v namespace nor for %v metric", j.Namespace, metric.Name)
+				j.Metrics[idx].Length = 120
+			}
+		}
+
+		if metric.NilToZero == nil {
+			if j.NilToZero != nil {
+				j.Metrics[idx].NilToZero = j.NilToZero
+			} else {
+				j.Metrics[idx].NilToZero = nil
 			}
 		}
 

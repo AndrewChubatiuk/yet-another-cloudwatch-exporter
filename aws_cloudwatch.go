@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"github.com/aws/aws-sdk-go/service/cloudwatch/cloudwatchiface"
+	"github.com/aws/aws-sdk-go/service/sts"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -43,9 +44,25 @@ type cloudwatchData struct {
 	EndTime                 time.Time
 	Delay                   int
 	Length                  int
+	AccountID               *string
 }
 
 var labelMap = make(map[string][]string)
+
+func createStsSession(roleArn string) *sts.STS {
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+	maxStsRetries := 5
+	config := &aws.Config{MaxRetries: &maxStsRetries}
+	if *debug {
+		config.LogLevel = aws.LogLevel(aws.LogDebugWithHTTPBody)
+	}
+	if roleArn != "" {
+		config.Credentials = stscreds.NewCredentials(sess, roleArn)
+	}
+	return sts.New(sess, config)
+}
 
 func createCloudwatchSession(region *string, roleArn string) *cloudwatch.CloudWatch {
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
@@ -258,37 +275,28 @@ func (c *cloudwatchInterface) getMetricsByName(namespace string, metric metric) 
 	return &res
 }
 
-func (r *tagsData) getDimensions(metrics []*cloudwatch.Metric) (dimensions [][]*cloudwatch.Dimension) {
-	detectedDimensions := make(map[string]string)
-	if params, ok := supportedNamespaces[*r.Namespace]; ok {
-		if r.ID != nil {
-			for _, d := range params.Dimensions {
-				regex := regexp.MustCompile(d)
-				if regex.Match([]byte(*r.ID)) {
-					match := regex.FindStringSubmatch(*r.ID)
-					for i, value := range match {
-						if regex.SubexpNames()[i] != "" {
-							detectedDimensions[regex.SubexpNames()[i]] = value
+func getResourcesDimensions(namespace string, resources []*tagsData) map[string]map[string][]*tag {
+	dimensions := make(map[string]map[string][]*tag)
+	if params, ok := supportedNamespaces[namespace]; ok {
+		for _, d := range params.Dimensions {
+			regex := regexp.MustCompile(d)
+			for _, r := range resources {
+				if r.ID != nil {
+					if regex.Match([]byte(*r.ID)) {
+						match := regex.FindStringSubmatch(*r.ID)
+						for i, value := range match {
+							key := regex.SubexpNames()[i]
+							if key != "" {
+								if _, exists := dimensions[key]; !exists {
+									dimensions[key] = make(map[string][]*tag)
+								}
+								dimensions[key][value] = r.Tags
+							}
 						}
 					}
 				}
 			}
 		}
-		if len(detectedDimensions) > 0 || r.ID == nil {
-			for _, metric := range metrics {
-				if r.ID == nil {
-					dimensions = append(dimensions, metric.Dimensions)
-				} else {
-					for _, dimension := range metric.Dimensions {
-						value, exists := detectedDimensions[*dimension.Name]
-						if exists && value == *dimension.Value {
-							dimensions = append(dimensions, metric.Dimensions)
-						}
-					}
-				}
-			}
-		}
-
 	}
 	return dimensions
 }
@@ -313,6 +321,9 @@ func (c *cloudwatchData) createPrometheusLabels() map[string]string {
 
 func recordLabelsForMetric(metricName string, promLabels map[string]string) {
 	var workingLabelsCopy []string
+	if len(promLabels) == 0 {
+		return
+	}
 	if _, ok := labelMap[metricName]; ok {
 		workingLabelsCopy = append(workingLabelsCopy, labelMap[metricName]...)
 	}
